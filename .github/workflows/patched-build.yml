@@ -1,0 +1,17 @@
+name: Patched Build
+
+on:
+  push:
+    branches:
+      - patched-sticky-and-menu
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/build_base.yml
+    with:
+      upload_artifacts: true
+      artifact_suffix: "-patched"

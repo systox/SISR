@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/Alia5/SISR/cmd"
 	"github.com/Alia5/SISR/sdl"
@@ -33,8 +34,11 @@ func overlayStateChanged(c *cmd.SISRContext) func(ctx context.Context, req *Over
 
 	previousVisibility := false
 	previousHitTest := false
+	release := &overlayEnforcerRelease{}
 
 	return func(ctx context.Context, req *OverlayChangedRequest) (*struct{}, error) {
+		release.apply(c, req.Body.Open)
+
 		c.Config.Lock()
 		kbmEnabled := c.Config.KeyboardMouseEmulation
 		c.Config.Unlock()
@@ -83,5 +87,49 @@ func overlayStateChanged(c *cmd.SISRContext) func(ctx context.Context, req *Over
 		}
 
 		return nil, nil
+	}
+}
+
+// overlayEnforcerRelease lifts the forced Steam Input layout while the Steam
+// overlay / menu is open, so the controller can navigate it, and restores the
+// previously forced appID when it closes.
+type overlayEnforcerRelease struct {
+	mtx          sync.Mutex
+	released     bool
+	restoreAppID uint32
+}
+
+func (r *overlayEnforcerRelease) apply(c *cmd.SISRContext, open bool) {
+	if c.BindingEnforcer == nil {
+		return
+	}
+	r.mtx.Lock()
+	defer r.mtx.Unlock()
+
+	if open {
+		if r.released {
+			return
+		}
+		forced := c.BindingEnforcer.GetForcedInputAppID()
+		if forced == 0 {
+			return
+		}
+		slog.Debug("Releasing forced SteamInput layout while overlay is open", "appID", forced)
+		if err := c.BindingEnforcer.ForceInputAppID(0); err != nil {
+			slog.Error("Failed to release forced SteamInput layout", "error", err)
+			return
+		}
+		r.released = true
+		r.restoreAppID = forced
+		return
+	}
+
+	if !r.released {
+		return
+	}
+	r.released = false
+	slog.Debug("Re-forcing SteamInput layout after overlay closed", "appID", r.restoreAppID)
+	if err := c.BindingEnforcer.ForceInputAppID(r.restoreAppID); err != nil {
+		slog.Error("Failed to re-force SteamInput layout", "error", err)
 	}
 }

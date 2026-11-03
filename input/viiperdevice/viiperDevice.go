@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/Alia5/VIIPER/viiperclient"
 )
@@ -41,6 +43,9 @@ type Device struct {
 	state     encoding.BinaryMarshaler
 	stateChan chan []byte
 	done      chan struct{}
+
+	droppedStates   atomic.Uint64
+	lastDropLogNano atomic.Int64
 }
 
 func New(
@@ -137,9 +142,33 @@ func (d *Device) QueueStateSend() {
 	case d.stateChan <- data:
 		return
 	default:
-		// Buffer full: keep freshest state (drop oldest pending packet).
 	}
 
+	// Buffer full: drop the oldest pending packet and queue the freshest state,
+	// so the latest input (e.g. a button release) is never the one lost.
+	select {
+	case <-d.stateChan:
+	default:
+	}
+	select {
+	case d.stateChan <- data:
+	default:
+	}
+	d.noteDroppedState()
+}
+
+// noteDroppedState counts dropped state packets and logs at most once per second.
+func (d *Device) noteDroppedState() {
+	dropped := d.droppedStates.Add(1)
+	now := time.Now().UnixNano()
+	last := d.lastDropLogNano.Load()
+	if now-last < int64(time.Second) || !d.lastDropLogNano.CompareAndSwap(last, now) {
+		return
+	}
+	slog.Warn("VIIPER state buffer full, dropped oldest pending state",
+		"device_type", d.deviceInfo.Type,
+		"dropped_total", dropped,
+	)
 }
 
 func (d *Device) handleState() {
