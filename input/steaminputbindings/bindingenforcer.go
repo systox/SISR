@@ -15,9 +15,11 @@ type Enforcer interface {
 	GetForcedInputAppID() uint32
 	ForceInputAppID(appID uint32) error
 	ForceOwnAppID() error
-	// Suspend lifts the forced layout in Steam without forgetting it, e.g. while
-	// the Steam overlay is open. Force requests made while suspended are
-	// recorded and applied on Resume.
+	// Suspend swaps the forced layout for Steam's own menu layout while the Steam
+	// overlay is open, without forgetting it. Merely unforcing is not enough: Steam
+	// picks the overlay layout when the Steam button is pressed, before SISR hears
+	// that the overlay opened, and does not re-pick on unforce. Force requests
+	// made while suspended are recorded and applied on Resume.
 	Suspend() error
 	// Resume re-applies the requested layout after Suspend.
 	Resume() error
@@ -54,6 +56,11 @@ func NewEnforcer(noSteam bool) Enforcer {
 		noSteam:  noSteam,
 	}
 }
+
+// steamUIAppID is the appID Steam itself uses for its menu UI ("ClientUI").
+// Forcing it loads Steam's menu-navigation layout (basicui), the same one Steam
+// picks on its own when the menu opens over an ordinary game.
+const steamUIAppID = 769
 
 func openForceURL(appID uint32) error {
 	return helper.OpenURL("steam://forceinputappid/" + strconv.FormatUint(uint64(appID), 10))
@@ -123,8 +130,8 @@ func (e *enforcer) Suspend() error {
 	if e.forcedAppID == 0 {
 		return nil
 	}
-	slog.Debug("Suspending forced SteamInput layout", "appID", e.forcedAppID)
-	return openForceURL(0)
+	slog.Debug("Suspending forced SteamInput layout for Steam menu layout", "appID", e.forcedAppID, "menuAppID", steamUIAppID)
+	return openForceURL(steamUIAppID)
 }
 
 func (e *enforcer) Resume() error {
