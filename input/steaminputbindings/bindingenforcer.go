@@ -32,6 +32,7 @@ type enforcer struct {
 	ownAppID    uint32
 	noSteam     bool
 	suspended   bool
+	menuForced  bool // Steam's menu layout is forced in place of forcedAppID
 	closed      bool
 
 	mtx sync.Mutex
@@ -128,10 +129,16 @@ func (e *enforcer) Suspend() error {
 	}
 	e.suspended = true
 	if e.forcedAppID == 0 {
+		// Nothing forced: Steam picks its menu layout on its own.
 		return nil
 	}
-	slog.Debug("Suspending forced SteamInput layout for Steam menu layout", "appID", e.forcedAppID, "menuAppID", steamUIAppID)
-	return openForceURL(steamUIAppID)
+	slog.Info("Suspending forced SteamInput layout for Steam menu layout", "appID", e.forcedAppID, "menuAppID", steamUIAppID)
+	err := openForceURL(steamUIAppID)
+	if err != nil {
+		return err
+	}
+	e.menuForced = true
+	return nil
 }
 
 func (e *enforcer) Resume() error {
@@ -142,10 +149,13 @@ func (e *enforcer) Resume() error {
 		return nil
 	}
 	e.suspended = false
-	if e.forcedAppID == 0 {
+	// Nothing forced before or during the overlay: Steam needs no change.
+	if e.forcedAppID == 0 && !e.menuForced {
 		return nil
 	}
-	slog.Debug("Resuming forced SteamInput layout", "appID", e.forcedAppID)
+	// Replace the menu layout with the requested one, even if that is now 0 (unforced).
+	e.menuForced = false
+	slog.Info("Resuming forced SteamInput layout", "appID", e.forcedAppID)
 	return openForceURL(e.forcedAppID)
 }
 
