@@ -43,11 +43,14 @@ func overlayStateChanged(c *cmd.SISRContext) func(ctx context.Context, req *Over
 	var lastAt float64
 
 	return func(ctx context.Context, req *OverlayChangedRequest) (*struct{}, error) {
+		// The lock covers ordering only: the stale check, the layout switch and
+		// queueing the window update. Waiting for the main loop happens outside
+		// it, so a slow dispatch can't hold up the next callback.
 		mtx.Lock()
-		defer mtx.Unlock()
 
 		if req.Body.At > 0 {
 			if req.Body.At <= lastAt {
+				mtx.Unlock()
 				slog.Debug("Ignoring stale overlay state change",
 					"open", req.Body.Open, "at", req.Body.At, "lastAt", lastAt)
 				return nil, nil
@@ -71,49 +74,49 @@ func overlayStateChanged(c *cmd.SISRContext) func(ctx context.Context, req *Over
 		kbmEnabled := c.Config.KeyboardMouseEmulation
 		c.Config.Unlock()
 
-		err, dispatchErr := cmd.ScheduleWindowDispatch(
-			ctx,
-			c.WindowDispatcher,
-			func(w *sdl.Window, wv webview.WebView) error {
-				if req.Body.Open {
-					previousVisibility = wv.Visible()
-					previousHitTest = extras.GetWindowHitTest(w)
+		resCh := c.WindowDispatcher.Schedule(func(w *sdl.Window, wv webview.WebView) any {
+			if req.Body.Open {
+				previousVisibility = wv.Visible()
+				previousHitTest = extras.GetWindowHitTest(w)
+			}
+
+			slog.Debug("Overlay state changed",
+				"previousWebViewVisibility", previousVisibility,
+				"previousCursorHitTest", previousHitTest,
+				"newOverlayOpenState", req.Body.Open,
+			)
+
+			if req.Body.Open {
+				wv.SetVisible(false)
+				err := extras.SetCursorHitTest(w, true)
+				if err != nil {
+					slog.Error("Failed setting window cursor hittest", "error", err)
 				}
-
-				slog.Debug("Overlay state changed",
-					"previousWebViewVisibility", previousVisibility,
-					"previousCursorHitTest", previousHitTest,
-					"newOverlayOpenState", req.Body.Open,
-				)
-
-				if req.Body.Open {
-					wv.SetVisible(false)
-					err := extras.SetCursorHitTest(w, true)
-					if err != nil {
-						slog.Error("Failed setting window cursor hittest", "error", err)
-					}
-				} else {
-					if previousVisibility {
-						wv.SetVisible(true)
-					}
-					targetHitTest := previousHitTest
-					if kbmEnabled {
-						targetHitTest = true
-					}
-					err := extras.SetCursorHitTest(w, targetHitTest)
-					if err != nil {
-						slog.Error("Failed setting window cursor hittest", "error", err)
-					}
+			} else {
+				if previousVisibility {
+					wv.SetVisible(true)
 				}
-				return nil
-			})
-		if dispatchErr != nil {
-			return nil, dispatchErr
-		}
-		if err != nil {
-			return nil, err
-		}
+				targetHitTest := previousHitTest
+				if kbmEnabled {
+					targetHitTest = true
+				}
+				err := extras.SetCursorHitTest(w, targetHitTest)
+				if err != nil {
+					slog.Error("Failed setting window cursor hittest", "error", err)
+				}
+			}
+			return nil
+		})
+		mtx.Unlock()
 
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case _, ok := <-resCh:
+			if !ok {
+				return nil, cmd.ErrDispatcherClosed
+			}
+		}
 		return nil, nil
 	}
 }

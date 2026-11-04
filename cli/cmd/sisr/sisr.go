@@ -46,6 +46,10 @@ func (s *SISR) Run(cfg config.Global) error {
 		os.Interrupt, syscall.SIGTERM,
 	)
 	defer stop()
+
+	// Created before the deferred cleanup, which unforces the layout through it.
+	bindingEnforcer := steaminputbindings.NewEnforcer(s.NoSteam)
+	s.bindingEnforcer = bindingEnforcer
 	defer s.cleanup(&s.Steam)
 
 	if s.MaxFPS == 0 {
@@ -106,8 +110,6 @@ func (s *SISR) Run(cfg config.Global) error {
 	trayNotifyCh := make(chan any, 10)
 	winDispatcher := cmd.NewWindowDispatcher[any]()
 
-	bindingEnforcer := steaminputbindings.NewEnforcer(s.NoSteam)
-	s.bindingEnforcer = bindingEnforcer
 	eventRouter := event.NewRouter()
 	deviceStore, deviceStoreClose, err := input.NewDeviceStore(s.NoSteam, s.GyroPassthrough)
 	if err != nil {
@@ -286,11 +288,7 @@ func (s *SISR) cleanup(c *config.Steam) {
 	}
 	// Shutdown also makes the enforcer ignore late requests (e.g. an overlay-closed
 	// callback arriving after cleanup), so the layout is not re-forced after exit.
-	if s.bindingEnforcer != nil {
-		err = s.bindingEnforcer.Shutdown()
-	} else {
-		err = helper.OpenURL("steam://forceinputappid/0")
-	}
+	err = s.bindingEnforcer.Shutdown()
 	if err != nil {
 		slog.Error("Failed to reset steam controller config", "error", err)
 	}

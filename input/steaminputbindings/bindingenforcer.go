@@ -153,10 +153,32 @@ func (e *enforcer) Resume() error {
 	if e.forcedAppID == 0 && !e.menuForced {
 		return nil
 	}
-	// Replace the menu layout with the requested one, even if that is now 0 (unforced).
-	e.menuForced = false
 	slog.Info("Resuming forced SteamInput layout", "appID", e.forcedAppID)
-	return openForceURL(e.forcedAppID)
+	var err error
+	if e.forcedAppID == 0 {
+		err = e.unforceMenuLocked()
+	} else {
+		err = openForceURL(e.forcedAppID)
+	}
+	if err != nil {
+		// Keep menuForced, so the next overlay close retries.
+		return err
+	}
+	e.menuForced = false
+	return nil
+}
+
+// unforceMenuLocked lifts a forced menu layout. A bare unforce leaves Steam on the
+// menu layout until the next focus change, so it first forces SISR's own layout,
+// which Steam would pick for SISR's window anyway. Callers must hold e.mtx.
+func (e *enforcer) unforceMenuLocked() error {
+	if e.ownAppID != 0 {
+		err := openForceURL(e.ownAppID)
+		if err != nil {
+			return err
+		}
+	}
+	return openForceURL(0)
 }
 
 func (e *enforcer) Shutdown() error {
@@ -167,5 +189,7 @@ func (e *enforcer) Shutdown() error {
 		return nil
 	}
 	e.closed = true
+	// No unforceMenuLocked here: SISR's window closing is a focus change, so
+	// Steam re-picks the layout on its own.
 	return openForceURL(0)
 }
