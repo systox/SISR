@@ -269,6 +269,9 @@ components:
           format: uri
           readOnly: true
           type: string
+        at:
+          format: double
+          type: number
         open:
           type: boolean
       required:

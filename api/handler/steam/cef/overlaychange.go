@@ -28,16 +28,44 @@ type OverlayChangedRequest struct {
 
 type OverlayChanged struct {
 	Open bool `json:"open"`
+
+	// At is when the injectee observed the change (ms since epoch, sub-ms precision).
+	// Callbacks are fired without awaiting each other, so they can arrive out of order;
+	// a callback older than the last one handled is ignored.
+	At float64 `json:"at,omitempty"`
 }
 
 func overlayStateChanged(c *cmd.SISRContext) func(ctx context.Context, req *OverlayChangedRequest) (*struct{}, error) {
 
 	previousVisibility := false
 	previousHitTest := false
-	release := &overlayEnforcerRelease{}
+	var mtx sync.Mutex
+	var lastAt float64
 
 	return func(ctx context.Context, req *OverlayChangedRequest) (*struct{}, error) {
-		release.apply(c, req.Body.Open)
+		mtx.Lock()
+		defer mtx.Unlock()
+
+		if req.Body.At > 0 {
+			if req.Body.At <= lastAt {
+				slog.Debug("Ignoring stale overlay state change",
+					"open", req.Body.Open, "at", req.Body.At, "lastAt", lastAt)
+				return nil, nil
+			}
+			lastAt = req.Body.At
+		}
+
+		if c.BindingEnforcer != nil {
+			var err error
+			if req.Body.Open {
+				err = c.BindingEnforcer.Suspend()
+			} else {
+				err = c.BindingEnforcer.Resume()
+			}
+			if err != nil {
+				slog.Error("Failed to update SteamInput layout for overlay state", "open", req.Body.Open, "error", err)
+			}
+		}
 
 		c.Config.Lock()
 		kbmEnabled := c.Config.KeyboardMouseEmulation
@@ -87,49 +115,5 @@ func overlayStateChanged(c *cmd.SISRContext) func(ctx context.Context, req *Over
 		}
 
 		return nil, nil
-	}
-}
-
-// overlayEnforcerRelease lifts the forced Steam Input layout while the Steam
-// overlay / menu is open, so the controller can navigate it, and restores the
-// previously forced appID when it closes.
-type overlayEnforcerRelease struct {
-	mtx          sync.Mutex
-	released     bool
-	restoreAppID uint32
-}
-
-func (r *overlayEnforcerRelease) apply(c *cmd.SISRContext, open bool) {
-	if c.BindingEnforcer == nil {
-		return
-	}
-	r.mtx.Lock()
-	defer r.mtx.Unlock()
-
-	if open {
-		if r.released {
-			return
-		}
-		forced := c.BindingEnforcer.GetForcedInputAppID()
-		if forced == 0 {
-			return
-		}
-		slog.Debug("Releasing forced SteamInput layout while overlay is open", "appID", forced)
-		if err := c.BindingEnforcer.ForceInputAppID(0); err != nil {
-			slog.Error("Failed to release forced SteamInput layout", "error", err)
-			return
-		}
-		r.released = true
-		r.restoreAppID = forced
-		return
-	}
-
-	if !r.released {
-		return
-	}
-	r.released = false
-	slog.Debug("Re-forcing SteamInput layout after overlay closed", "appID", r.restoreAppID)
-	if err := c.BindingEnforcer.ForceInputAppID(r.restoreAppID); err != nil {
-		slog.Error("Failed to re-force SteamInput layout", "error", err)
 	}
 }

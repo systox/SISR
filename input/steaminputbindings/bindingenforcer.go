@@ -10,15 +10,27 @@ import (
 )
 
 type Enforcer interface {
+	// GetForcedInputAppID returns the requested forced appID (0 = not forced),
+	// even while enforcement is suspended.
 	GetForcedInputAppID() uint32
 	ForceInputAppID(appID uint32) error
 	ForceOwnAppID() error
+	// Suspend lifts the forced layout in Steam without forgetting it, e.g. while
+	// the Steam overlay is open. Force requests made while suspended are
+	// recorded and applied on Resume.
+	Suspend() error
+	// Resume re-applies the requested layout after Suspend.
+	Resume() error
+	// Shutdown unforces the layout and ignores every later request.
+	Shutdown() error
 }
 
 type enforcer struct {
 	forcedAppID uint32
 	ownAppID    uint32
 	noSteam     bool
+	suspended   bool
+	closed      bool
 
 	mtx sync.Mutex
 }
@@ -43,6 +55,10 @@ func NewEnforcer(noSteam bool) Enforcer {
 	}
 }
 
+func openForceURL(appID uint32) error {
+	return helper.OpenURL("steam://forceinputappid/" + strconv.FormatUint(uint64(appID), 10))
+}
+
 func (e *enforcer) GetForcedInputAppID() uint32 {
 	e.mtx.Lock()
 	defer e.mtx.Unlock()
@@ -53,30 +69,24 @@ func (e *enforcer) ForceInputAppID(appID uint32) error {
 	e.mtx.Lock()
 	defer e.mtx.Unlock()
 
-	if e.noSteam {
+	if e.noSteam || e.closed {
 		return nil
 	}
 
 	if appID == 0 {
-		slog.Info("Unforcing SteamInput layout")
+		slog.Info("Unforcing SteamInput layout", "suspended", e.suspended)
 	} else {
-		slog.Info("Forcing SteamInput layout for appID", "appID", appID)
+		slog.Info("Forcing SteamInput layout for appID", "appID", appID, "suspended", e.suspended)
 	}
 
-	err := helper.OpenURL("steam://forceinputappid/" + strconv.FormatUint(uint64(appID), 10))
-	if err != nil {
-		return err
-	}
-
-	e.forcedAppID = appID
-	return nil
+	return e.setLocked(appID)
 }
 
 func (e *enforcer) ForceOwnAppID() error {
 	e.mtx.Lock()
 	defer e.mtx.Unlock()
 
-	if e.noSteam {
+	if e.noSteam || e.closed {
 		return nil
 	}
 
@@ -84,13 +94,61 @@ func (e *enforcer) ForceOwnAppID() error {
 		return ErrNoSteamAppID
 	}
 
-	slog.Info("Forcing SteamInput layout for own appID", "appID", e.ownAppID)
+	slog.Info("Forcing SteamInput layout for own appID", "appID", e.ownAppID, "suspended", e.suspended)
 
-	err := helper.OpenURL("steam://forceinputappid/" + strconv.FormatUint(uint64(e.ownAppID), 10))
-	if err != nil {
-		return err
+	return e.setLocked(e.ownAppID)
+}
+
+// setLocked records the requested appID and applies it unless suspended.
+// Callers must hold e.mtx.
+func (e *enforcer) setLocked(appID uint32) error {
+	if !e.suspended {
+		err := openForceURL(appID)
+		if err != nil {
+			return err
+		}
 	}
-
-	e.forcedAppID = e.ownAppID
+	e.forcedAppID = appID
 	return nil
+}
+
+func (e *enforcer) Suspend() error {
+	e.mtx.Lock()
+	defer e.mtx.Unlock()
+
+	if e.noSteam || e.closed || e.suspended {
+		return nil
+	}
+	e.suspended = true
+	if e.forcedAppID == 0 {
+		return nil
+	}
+	slog.Debug("Suspending forced SteamInput layout", "appID", e.forcedAppID)
+	return openForceURL(0)
+}
+
+func (e *enforcer) Resume() error {
+	e.mtx.Lock()
+	defer e.mtx.Unlock()
+
+	if e.noSteam || e.closed || !e.suspended {
+		return nil
+	}
+	e.suspended = false
+	if e.forcedAppID == 0 {
+		return nil
+	}
+	slog.Debug("Resuming forced SteamInput layout", "appID", e.forcedAppID)
+	return openForceURL(e.forcedAppID)
+}
+
+func (e *enforcer) Shutdown() error {
+	e.mtx.Lock()
+	defer e.mtx.Unlock()
+
+	if e.noSteam || e.closed {
+		return nil
+	}
+	e.closed = true
+	return openForceURL(0)
 }

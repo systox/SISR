@@ -17,7 +17,8 @@ __INJECT_RETURN = (async () => {
             (_a, _b, overlayOpen) => {
                 void client.POST('/api/v1/steam/cef/overlay-state-changed', {
                     body: {
-                        open: overlayOpen
+                        open: overlayOpen,
+                        at: performance.timeOrigin + performance.now()
                     }
                 }).catch((e) => console.error('Error sending overlay state change', e));
             }
@@ -34,14 +35,16 @@ __INJECT_RETURN = (async () => {
         const focusListener = () => {
             void client.POST('/api/v1/steam/cef/overlay-state-changed', {
                 body: {
-                    open: document.hasFocus()
+                    open: document.hasFocus(),
+                    at: performance.timeOrigin + performance.now()
                 }
             }).catch((e) => console.error('Error sending overlay state change', e));
         };
         const focusOutListener = () => {
             void client.POST('/api/v1/steam/cef/overlay-state-changed', {
                 body: {
-                    open: false
+                    open: false,
+                    at: performance.timeOrigin + performance.now()
                 }
             }).catch((e) => console.error('Error sending overlay state change', e));
         };
